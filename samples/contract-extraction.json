@@ -1,0 +1,120 @@
+{
+  "document_type": "contract",
+  "extraction_timestamp": "2024-01-15T10:30:00Z",
+  "parties": [
+    {
+      "name": "Acme Corporation",
+      "type": "company",
+      "role": "client",
+      "address": "123 Business Ave, Suite 100, New York, NY 10001",
+      "contact": {
+        "email": "contracts@acme.com",
+        "phone": "+1-555-0123"
+      }
+    },
+    {
+      "name": "FirmFlow Legal Services",
+      "type": "company", 
+      "role": "service_provider",
+      "address": "456 Law Street, Floor 5, Boston, MA 02101",
+      "contact": {
+        "email": "legal@firmflow.com",
+        "phone": "+1-555-0456"
+      }
+    }
+  ],
+  "contract_details": {
+    "title": "Professional Services Agreement",
+    "contract_number": "PSA-2024-001",
+    "effective_date": "2024-02-01",
+    "expiration_date": "2025-01-31",
+    "auto_renewal": true,
+    "renewal_period": "12 months",
+    "governing_law": "Massachusetts"
+  },
+  "financial_terms": {
+    "total_value": 150000,
+    "currency": "USD",
+    "payment_schedule": "monthly",
+    "payment_terms": "Net 30",
+    "late_fee_percentage": 1.5,
+    "expenses_reimbursable": true
+  },
+  "scope_of_work": {
+    "description": "Legal document review and contract analysis services",
+    "deliverables": [
+      "Monthly legal compliance reports",
+      "Contract risk assessments", 
+      "Regulatory update summaries"
+    ],
+    "performance_metrics": [
+      "95% accuracy in document review",
+      "48-hour turnaround for urgent matters",
+      "Monthly status reporting"
+    ]
+  },
+  "key_clauses": [
+    {
+      "type": "termination",
+      "summary": "Either party may terminate with 30 days written notice",
+      "page_reference": 8
+    },
+    {
+      "type": "confidentiality", 
+      "summary": "Standard NDA provisions with 5-year post-termination period",
+      "page_reference": 12
+    },
+    {
+      "type": "liability",
+      "summary": "Liability cap set at total contract value",
+      "page_reference": 15
+    },
+    {
+      "type": "intellectual_property",
+      "summary": "Work product ownership retained by client",
+      "page_reference": 18
+    }
+  ],
+  "compliance_requirements": [
+    "SOX compliance reporting",
+    "GDPR data handling procedures", 
+    "Industry-specific regulatory adherence"
+  ],
+  "risk_assessment": {
+    "overall_risk": "medium",
+    "key_risks": [
+      "Broad liability exposure in Section 7.2",
+      "Ambiguous termination clause language",
+      "Missing force majeure provisions"
+    ],
+    "recommendations": [
+      "Add liability limitation clause",
+      "Clarify termination notice requirements",
+      "Include standard force majeure language"
+    ]
+  },
+  "extracted_dates": [
+    {
+      "type": "signature_date",
+      "date": "2024-01-15",
+      "page_reference": 20
+    },
+    {
+      "type": "effective_date", 
+      "date": "2024-02-01",
+      "page_reference": 1
+    },
+    {
+      "type": "first_payment_due",
+      "date": "2024-03-01", 
+      "page_reference": 5
+    }
+  ],
+  "confidence_scores": {
+    "parties_extraction": 0.98,
+    "financial_terms": 0.95,
+    "dates_extraction": 0.92,
+    "key_clauses": 0.89,
+    "overall_accuracy": 0.94
+  }
+}
