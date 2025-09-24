@@ -5,60 +5,98 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
+const helmet = require('helmet');
 require('dotenv').config();
 
 const PrismaDatabaseManager = require('./prisma-database');
 
+// Import security middleware and services
+const { 
+  validateOrigin, 
+  validateAuth: authenticateUser, 
+  logSecurityEvent 
+} = require('./middleware/security');
+const { 
+  createSecureUpload, 
+  validateUploadedFile 
+} = require('./middleware/fileValidation');
+
+const {
+  generalRateLimiter,
+  combinedUploadRateLimiter
+} = require('./middleware/rateLimitMiddleware');
+const VirusScanner = require('./services/virusScanner');
+const S3Service = require('./services/s3Service');
+const UserQuotaService = require('./services/userQuota');
+
 const app = express();
 const PORT = process.env.PORT || 4000;
 const STORAGE_DIR = process.env.STORAGE_DIR || './storage';
+const MAX_FILE_SIZE = parseInt(process.env.UPLOAD_MAX_SIZE_BYTES) || 10485760; // 10MB default
 
-// Initialize database
+// Initialize services
 const db = new PrismaDatabaseManager();
+const virusScanner = new VirusScanner();
+const s3Service = new S3Service();
+const quotaService = new UserQuotaService();
+
+// Initialize rate limiters
+const uploadRateLimiter = async (req, res, next) => {
+  try {
+    const rateLimiter = createRateLimiter('upload', 10, 60); // 10 uploads per minute
+    await rateLimiter.consume(req.ip);
+    next();
+  } catch (rejRes) {
+    res.status(429).json({
+      error: 'Too many upload requests',
+      message: 'Please wait before uploading again',
+      retryAfter: Math.round(rejRes.msBeforeNext / 1000)
+    });
+  }
+};
+
+// Remove old rate limiting code - now handled by rateLimitMiddleware.js
 
 // Ensure storage directory exists
 if (!fs.existsSync(STORAGE_DIR)) {
   fs.mkdirSync(STORAGE_DIR, { recursive: true });
 }
 
-// Middleware
-app.use(cors());
-app.use(morgan('combined'));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Security middleware
+app.use(helmet({
+  crossOriginEmbedderPolicy: false,
+  contentSecurityPolicy: false
+}));
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, STORAGE_DIR);
-  },
-  filename: (req, file, cb) => {
-    const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1E9)}-${file.originalname}`;
-    cb(null, uniqueName);
-  }
-});
+// CORS configuration with origin validation
+const allowedOrigins = process.env.ALLOWED_ORIGINS 
+  ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
+  : ['http://localhost:3000'];
 
-const upload = multer({ 
-  storage,
-  limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB limit
-  },
-  fileFilter: (req, file, cb) => {
-    // Accept common document formats
-    const allowedTypes = [
-      'application/pdf',
-      'application/msword',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'text/plain'
-    ];
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
     
-    if (allowedTypes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Invalid file type. Only PDF, DOC, DOCX, and TXT files are allowed.'));
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
     }
-  }
-});
+    
+    logSecurityEvent('cors_violation', { origin, allowedOrigins });
+    return callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true
+}));
+
+app.use(morgan('combined'));
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+
+// Apply general rate limiting to all routes
+app.use(generalRateLimiter);
+
+// Configure secure file upload
+const upload = createSecureUpload(STORAGE_DIR);
 
 // Mock contract extraction function
 function simulateContractExtraction() {
@@ -83,54 +121,284 @@ function simulateContractExtraction() {
 
 // Routes
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
-
-// Upload endpoint
-app.post('/api/upload', upload.single('file'), async (req, res) => {
+// Health check endpoint with service status
+app.get('/health', generalRateLimiter, async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ 
-        error: 'No file uploaded',
-        message: 'Please provide a file to upload'
-      });
-    }
-
-    const filename = req.file.originalname;
-
-    // Create job in database
-    const job = await db.createJob(filename, 'processing');
-    const jobId = job.id;
-
-    // Simulate async processing
-    setTimeout(async () => {
-      try {
-        const extractionData = simulateContractExtraction();
-        await db.updateJobStatus(jobId, 'completed', JSON.stringify(extractionData));
-        console.log(`✅ Job ${jobId} completed for file: ${filename}`);
-      } catch (error) {
-        console.error(`❌ Job ${jobId} failed:`, error);
-        await db.updateJobStatus(jobId, 'failed', JSON.stringify({ error: error.message }));
+    const health = {
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      services: {
+        database: { status: 'ok' },
+        virusScanner: await virusScanner.checkAvailability(),
+        s3: await s3Service.checkHealth(),
+        quota: await quotaService.checkHealth()
       }
-    }, 3000 + Math.random() * 2000); // 3-5 seconds processing time
-
-    res.json({
-      jobId,
-      filename,
-      status: 'processing',
-      message: 'File uploaded successfully and processing started'
-    });
-
+    };
+    
+    res.json(health);
   } catch (error) {
-    console.error('Upload error:', error);
-    res.status(500).json({ 
-      error: 'Upload failed',
-      message: error.message 
+    res.status(500).json({
+      status: 'error',
+      timestamp: new Date().toISOString(),
+      error: error.message
     });
   }
 });
+
+// Presigned upload endpoint (S3)
+app.post('/api/presign', 
+  validateOrigin,
+  authenticateUser,
+  uploadRateLimiter,
+  async (req, res) => {
+    try {
+      if (!s3Service.enabled) {
+        return res.status(400).json({
+          error: 'Presigned uploads not enabled',
+          message: 'Use /api/upload for direct uploads'
+        });
+      }
+
+      const { filename, contentType, contentLength } = req.body;
+      const userId = req.user.id;
+
+      if (!filename || !contentType || !contentLength) {
+        return res.status(400).json({
+          error: 'Missing required fields',
+          message: 'filename, contentType, and contentLength are required'
+        });
+      }
+
+      // Check quota
+      const quotaCheck = await quotaService.checkQuota(userId, contentLength);
+      if (!quotaCheck.allowed) {
+        return res.status(429).json({
+          error: 'Quota exceeded',
+          message: quotaCheck.reason,
+          usage: quotaCheck.usage
+        });
+      }
+
+      // Generate presigned URL
+      const presignedData = await s3Service.generatePresignedUpload(
+        userId, filename, contentType, contentLength
+      );
+
+      res.json({
+        ...presignedData,
+        message: 'Presigned URL generated successfully'
+      });
+
+    } catch (error) {
+      console.error('Presign error:', error);
+      logSecurityEvent('presign_error', { 
+        userId: req.user?.id, 
+        error: error.message 
+      });
+      
+      res.status(500).json({
+        error: 'Failed to generate presigned URL',
+        message: error.message
+      });
+    }
+  }
+);
+
+// Complete presigned upload
+app.post('/api/complete',
+  validateOrigin,
+  authenticateUser,
+  async (req, res) => {
+    try {
+      const { objectKey } = req.body;
+      const userId = req.user.id;
+
+      if (!objectKey) {
+        return res.status(400).json({
+          error: 'Missing objectKey',
+          message: 'objectKey is required'
+        });
+      }
+
+      // Verify object exists
+      const objectInfo = await s3Service.checkObjectExists(objectKey);
+      if (!objectInfo.exists) {
+        return res.status(404).json({
+          error: 'Object not found',
+          message: 'Upload may have failed or expired'
+        });
+      }
+
+      // Record usage
+      await quotaService.recordUsage(userId, objectInfo.size);
+
+      // Create job in database
+      const job = await db.createJob(objectKey, 'processing');
+      const jobId = job.id;
+
+      // Start async processing
+      setTimeout(async () => {
+        try {
+          // Download file for processing if needed
+          const localPath = path.join(STORAGE_DIR, `${jobId}-${path.basename(objectKey)}`);
+          await s3Service.downloadToLocal(objectKey, localPath);
+
+          // Virus scan
+          await virusScanner.scanFileAsync(localPath, jobId, db);
+
+          // Process extraction
+          const extractionData = simulateContractExtraction();
+          await db.updateJobStatus(jobId, 'completed', JSON.stringify(extractionData));
+          
+          // Cleanup local file
+          fs.unlinkSync(localPath);
+          
+          console.log(`✅ Job ${jobId} completed for S3 object: ${objectKey}`);
+        } catch (error) {
+          console.error(`❌ Job ${jobId} failed:`, error);
+          await db.updateJobStatus(jobId, 'failed', JSON.stringify({ error: error.message }));
+        }
+      }, 3000 + Math.random() * 2000);
+
+      res.json({
+        jobId,
+        objectKey,
+        status: 'processing',
+        message: 'Upload completed and processing started'
+      });
+
+    } catch (error) {
+      console.error('Complete upload error:', error);
+      res.status(500).json({
+        error: 'Failed to complete upload',
+        message: error.message
+      });
+    }
+  }
+);
+
+// Multer error handling middleware
+const handleMulterError = (error, req, res, next) => {
+  if (error instanceof multer.MulterError) {
+    switch (error.code) {
+      case 'LIMIT_FILE_SIZE':
+        return res.status(413).json({
+          error: 'File too large',
+          message: `File size exceeds the limit of ${MAX_FILE_SIZE / (1024 * 1024)}MB`
+        });
+      case 'LIMIT_FILE_COUNT':
+        return res.status(400).json({
+          error: 'Too many files',
+          message: 'Only one file is allowed per upload'
+        });
+      case 'LIMIT_UNEXPECTED_FILE':
+        return res.status(400).json({
+          error: 'Unexpected field',
+          message: 'File must be uploaded in the "file" field'
+        });
+      default:
+        return res.status(400).json({
+          error: 'Upload error',
+          message: error.message
+        });
+    }
+  }
+  
+  if (error.code === 'INVALID_FILE_TYPE') {
+    return res.status(400).json({
+      error: 'Invalid file type',
+      message: error.message
+    });
+  }
+  
+  next(error);
+};
+
+// Upload endpoint (direct upload)
+app.post('/api/upload', 
+  validateOrigin,
+  authenticateUser,
+  combinedUploadRateLimiter,
+  upload.single('file'), 
+  handleMulterError,
+  validateUploadedFile,
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ 
+          error: 'No file uploaded',
+          message: 'Please provide a file to upload'
+        });
+      }
+
+      const userId = req.user.id;
+      const filename = req.file.originalname;
+      const filePath = req.file.path;
+      const fileSize = req.file.size;
+
+      // Check quota
+      const quotaCheck = await quotaService.checkQuota(userId, fileSize);
+      if (!quotaCheck.allowed) {
+        // Delete uploaded file
+        fs.unlinkSync(filePath);
+        
+        return res.status(429).json({
+          error: 'Quota exceeded',
+          message: quotaCheck.reason,
+          usage: quotaCheck.usage
+        });
+      }
+
+      // Record usage
+      await quotaService.recordUsage(userId, fileSize);
+
+      // Create job in database
+      const job = await db.createJob(filename, 'processing');
+      const jobId = job.id;
+
+      // Start async processing
+      setTimeout(async () => {
+        try {
+          // Virus scan
+          await virusScanner.scanFileAsync(filePath, jobId, db);
+
+          // Process extraction
+          const extractionData = simulateContractExtraction();
+          await db.updateJobStatus(jobId, 'completed', JSON.stringify(extractionData));
+          console.log(`✅ Job ${jobId} completed for file: ${filename}`);
+        } catch (error) {
+          console.error(`❌ Job ${jobId} failed:`, error);
+          await db.updateJobStatus(jobId, 'failed', JSON.stringify({ error: error.message }));
+        }
+      }, 3000 + Math.random() * 2000);
+
+      res.json({
+        jobId,
+        filename,
+        status: 'processing',
+        message: 'File uploaded successfully and processing started',
+        usage: quotaCheck.usage
+      });
+
+    } catch (error) {
+      console.error('Upload error:', error);
+      
+      // Clean up file if it exists
+      if (req.file && req.file.path) {
+        try {
+          fs.unlinkSync(req.file.path);
+        } catch (cleanupError) {
+          console.error('Error cleaning up file:', cleanupError);
+        }
+      }
+      
+      res.status(500).json({ 
+        error: 'Upload failed',
+        message: error.message 
+      });
+    }
+  }
+);
 
 // Status check endpoint
 app.get('/api/status/:jobId', async (req, res) => {

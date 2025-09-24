@@ -93,6 +93,12 @@ test-*.docx
 test-timestamps.js
 check-timezone.js
 
+# Temporary test scripts (development only)
+test-*.ps1
+test-*.js
+!test/
+!generate-test-jwt.js
+
 # OS generated files
 .DS_Store
 .DS_Store?

@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7
+    container_name: firmflow-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    environment:
+      - REDIS_APPENDONLY=yes
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  redis-data:
+    driver: local

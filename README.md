@@ -336,6 +336,89 @@ The API includes comprehensive error handling:
 - CORS enabled for cross-origin requests
 - Input sanitization and validation
 - Graceful error handling
+- **Redis-based rate limiting** with memory fallback
+
+### Rate Limiting
+
+The backend implements sophisticated rate limiting with Redis support for production environments:
+
+#### Configuration
+
+Rate limiting is configured via environment variables:
+
+```bash
+# Rate limiting driver (memory or redis)
+RATE_LIMIT_DRIVER=memory
+
+# Redis connection (required for redis driver)
+REDIS_URL=redis://localhost:6379
+
+# Rate limits
+RATE_LIMIT_GENERAL_PER_MINUTE=60      # General requests per minute
+RATE_LIMIT_USER_PER_MINUTE=3          # User uploads per minute  
+RATE_LIMIT_USER_PER_HOUR=100          # User uploads per hour
+```
+
+#### Redis Setup (Production)
+
+1. **Start Redis with Docker Compose**
+   ```bash
+   docker-compose up redis -d
+   ```
+
+2. **Update environment for Redis**
+   ```bash
+   RATE_LIMIT_DRIVER=redis
+   REDIS_URL=redis://localhost:6379
+   ```
+
+3. **Restart the backend**
+   ```bash
+   npm start
+   ```
+
+#### Features
+
+- **Dual Driver Support**: Memory (development) and Redis (production)
+- **Automatic Fallback**: Falls back to memory if Redis is unavailable
+- **Proper HTTP Headers**: Includes `X-RateLimit-*` and `Retry-After` headers
+- **Comprehensive Logging**: Logs rate limit hits with user details
+- **Per-User Limits**: Separate limits for authenticated users vs IP addresses
+
+#### Rate Limit Responses
+
+When rate limited, the API returns:
+
+```json
+{
+  "error": "rate_limited",
+  "message": "Rate limit exceeded", 
+  "retryAfter": 45,
+  "limit": 3,
+  "remaining": 0,
+  "resetTime": 1640995200000
+}
+```
+
+**Headers:**
+- `X-RateLimit-Limit`: Maximum requests allowed
+- `X-RateLimit-Remaining`: Requests remaining in current window
+- `X-RateLimit-Reset`: When the rate limit resets (ISO timestamp)
+- `Retry-After`: Seconds to wait before retrying
+
+#### Testing Rate Limits
+
+Run the specialized Redis rate limiting test:
+
+```bash
+node test/redis-rate-limit-test.js
+```
+
+This test validates:
+- Redis driver functionality
+- Memory driver fallback
+- Proper 429 responses with headers
+- Rate limit enforcement with upload endpoints
 
 ## 📊 Logging
 
