@@ -284,6 +284,43 @@ STORAGE_DIR=./storage
 
 ## 🧪 Testing the API
 
+### Manual LLM Extraction Testing
+
+For comprehensive testing of the LLM extraction workflow, use the provided test scripts:
+
+**Quick Test Commands:**
+```bash
+# 1. Upload file
+curl -F "file=@samples/sample.pdf" http://localhost:4000/api/upload
+
+# 2. Poll status (replace JOBID with actual job ID from upload response)
+curl http://localhost:4000/api/status/JOBID
+
+# 3. Retry processing (dev-only, replace JOBID with actual job ID)
+curl -X POST http://localhost:4000/api/force-process/JOBID
+```
+
+**Test Scripts Available:**
+- `test-manual.sh` - Bash script with all test commands
+- `test-manual.bat` - Windows batch file version
+- `test-commands.md` - Detailed testing documentation with expected responses
+
+**Expected Log Output:**
+```
+OCR_START chars=1234
+OCR_DONE
+LLM_START model=gpt-4
+LLM_DONE tokens~=2500, cost~=$0.0125
+JOB_DONE
+```
+
+**Acceptance Criteria:**
+- ✅ Status transitions: `processing` → `completed`
+- ✅ Extraction includes: `parties[]`, `summary`, `confidence_score`
+- ✅ Confidence score in range [0,1]
+- ✅ `requires_review` flag set by threshold (< 0.65)
+- ✅ Frontend displays results without changes
+
 ### Complete workflow test:
 
 1. **Check health**

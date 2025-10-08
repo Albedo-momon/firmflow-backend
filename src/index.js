@@ -9,6 +9,7 @@ const helmet = require('helmet');
 require('dotenv').config();
 
 const PrismaDatabaseManager = require('./prisma-database');
+const { processJob, processJobById } = require('./workers/processJob');
 
 // Import security middleware and services
 const { 
@@ -356,21 +357,26 @@ app.post('/api/upload',
       const job = await db.createJob(filename, 'processing');
       const jobId = job.id;
 
-      // Start async processing
-      setTimeout(async () => {
+      // Start async processing with real LLM extraction
+      setImmediate(async () => {
         try {
-          // Virus scan
+          // Virus scan first
           await virusScanner.scanFileAsync(filePath, jobId, db);
 
-          // Process extraction
-          const extractionData = simulateContractExtraction();
-          await db.updateJobStatus(jobId, 'completed', JSON.stringify(extractionData));
-          console.log(`✅ Job ${jobId} completed for file: ${filename}`);
+          // Process with real LLM extraction
+          console.log(`🚀 Starting processJob for ${jobId}`);
+          const result = await processJob(job);
+          
+          if (result.success) {
+            console.log(`✅ Job ${jobId} completed successfully`);
+          } else {
+            console.error(`❌ Job ${jobId} failed: ${result.error}`);
+          }
         } catch (error) {
-          console.error(`❌ Job ${jobId} failed:`, error);
+          console.error(`❌ Job ${jobId} processing failed:`, error);
           await db.updateJobStatus(jobId, 'failed', JSON.stringify({ error: error.message }));
         }
-      }, 3000 + Math.random() * 2000);
+      });
 
       res.json({
         jobId,
@@ -453,6 +459,66 @@ app.get('/api/status/:jobId', async (req, res) => {
     console.error('Status check error:', error);
     res.status(500).json({ 
       error: 'Status check failed',
+      message: error.message 
+    });
+  }
+});
+
+// Dev-only endpoint to force re-process a job
+app.post('/api/force-process/:jobId', async (req, res) => {
+  // Only allow in development mode
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(404).json({ error: 'Endpoint not available in production' });
+  }
+
+  try {
+    const { jobId } = req.params;
+    
+    console.log(`🔄 Force processing requested for job: ${jobId}`);
+    
+    // Check if job exists
+    const job = await db.getJob(jobId);
+    if (!job) {
+      return res.status(404).json({
+        error: 'Job not found',
+        message: `No job found with ID: ${jobId}`
+      });
+    }
+
+    // Reset job status to processing
+    await db.updateJobStatus(jobId, 'processing', null);
+    
+    // Start processing immediately
+    setImmediate(async () => {
+      try {
+        console.log(`🚀 Force processing job ${jobId}`);
+        const result = await processJobById(jobId);
+        
+        if (result.success) {
+          console.log(`✅ Force processing completed for job ${jobId}`);
+        } else {
+          console.error(`❌ Force processing failed for job ${jobId}: ${result.error}`);
+        }
+      } catch (error) {
+        console.error(`❌ Force processing error for job ${jobId}:`, error);
+        await db.updateJobStatus(jobId, 'failed', JSON.stringify({ 
+          error: error.message,
+          timestamp: new Date().toISOString(),
+          source: 'force-process'
+        }));
+      }
+    });
+
+    res.json({
+      message: 'Job re-processing started',
+      jobId: jobId,
+      status: 'processing'
+    });
+
+  } catch (error) {
+    console.error('Force process error:', error);
+    res.status(500).json({ 
+      error: 'Force process failed',
       message: error.message 
     });
   }
